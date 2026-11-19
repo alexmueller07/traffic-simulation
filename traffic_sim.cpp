@@ -76,3 +76,49 @@ private:
     std::condition_variable notFull_, notEmpty_;
 };
 
+class F3Input {
+public:
+    static const int CAP_P1 = 10, CAP_P2 = 5;
+
+    bool putP1(const std::string& who) { return put(who, p1_, CAP_P1, "P1"); }
+    bool putP2(const std::string& who) { return put(who, p2_, CAP_P2, "P2"); }
+
+    bool takeInputs(const std::string& who) {
+        std::unique_lock<std::mutex> lk(m_);
+        if (!(p1_ >= 2 && p2_ >= 1))
+            log(who, "waiting for inputs (P1=" + std::to_string(p1_) +
+                         " P2=" + std::to_string(p2_) + ")");
+        inputs_.wait(lk, [&] { return (p1_ >= 2 && p2_ >= 1) || !running; });
+        if (!running) return false;
+        p1_ -= 2;
+        p2_ -= 1;
+        space_.notify_all();
+        return true;
+    }
+
+    std::string levels() {
+        std::lock_guard<std::mutex> lk(m_);
+        return "P1=" + std::to_string(p1_) + "/10 P2=" + std::to_string(p2_) + "/5";
+    }
+
+    void wakeAll() {
+        std::lock_guard<std::mutex> lk(m_);
+        inputs_.notify_all();
+        space_.notify_all();
+    }
+
+private:
+    bool put(const std::string& who, int& slot, int cap, const char* name) {
+        std::unique_lock<std::mutex> lk(m_);
+        if (slot == cap) log(who, std::string("F3 ") + name + " store full -> waiting to unload");
+        space_.wait(lk, [&] { return slot < cap || !running; });
+        if (!running) return false;
+        ++slot;
+        inputs_.notify_all();
+        return true;
+    }
+
+    int p1_ = 0, p2_ = 0;
+    std::mutex m_;
+    std::condition_variable inputs_, space_;
+};
