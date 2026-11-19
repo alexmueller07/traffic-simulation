@@ -122,3 +122,95 @@ private:
     std::mutex m_;
     std::condition_variable inputs_, space_;
 };
+
+class Gate {
+public:
+    void setDown(bool down) {
+        std::lock_guard<std::mutex> lk(m_);
+        down_ = down;
+        cv_.notify_all();
+    }
+
+    void passIfUp(const std::string& who) {
+        std::unique_lock<std::mutex> lk(m_);
+        if (!down_) return;
+        log(who, "OUT OF SERVICE");
+        cv_.wait(lk, [&] { return !down_ || !running; });
+        if (running) log(who, "back in service");
+    }
+
+    void wakeAll() {
+        std::lock_guard<std::mutex> lk(m_);
+        cv_.notify_all();
+    }
+
+private:
+    bool down_ = false;
+    std::mutex m_;
+    std::condition_variable cv_;
+};
+
+static Storage f1Store("F1", 10);
+static Storage f2Store("F2", 5);
+static F3Input f3In;
+static Gate f1Gate, f2Gate, shipGate, dept1Gate, dept2Gate;
+
+static void producer(const std::string name, const std::string product, Storage& out,
+                     int periodMs, int capacity, Gate& gate) {
+    int made = 0;
+    while (running) {
+        gate.passIfUp(name);
+        if (!running) break;
+        std::this_thread::sleep_for(milliseconds(periodMs));
+        int level = out.putOne(name);
+        if (level < 0) break;
+        log(name, "produced " + product + " #" + std::to_string(++made) + " (storage " +
+                      std::to_string(level) + "/" + std::to_string(capacity) + ")");
+    }
+}
+
+static void ship() {
+    const std::string me = "Ship";
+    while (running) {
+        shipGate.passIfUp(me);
+        int n = f1Store.takeUpTo(5); 
+        if (n == 0) break;
+        log(me, "loaded " + std::to_string(n) + "xP1 at F1, sailing to F3");
+        std::this_thread::sleep_for(milliseconds(250));
+        for (int i = 0; i < n; ++i)
+            if (!f3In.putP1(me)) return;
+        log(me, "unloaded " + std::to_string(n) + "xP1 at F3 (" + f3In.levels() + "), returning");
+        std::this_thread::sleep_for(milliseconds(250));
+    }
+}
+
+static void truck(int id) {
+    const std::string me = "Truck" + std::to_string(id);
+    while (running) {
+        if (f2Store.takeExactly(2) == 0) break; 
+        log(me, "loaded 2xP2 at F2, driving to F3");
+        std::this_thread::sleep_for(milliseconds(250));
+        for (int i = 0; i < 2; ++i)
+            if (!f3In.putP2(me)) return;
+        log(me, "unloaded 2xP2 at F3 (" + f3In.levels() + "), returning");
+        std::this_thread::sleep_for(milliseconds(250));
+    }
+}
+
+static void department(int id, Gate& gate) {
+    const std::string me = "F3-D" + std::to_string(id);
+    while (running) {
+        gate.passIfUp(me);
+        if (!running) break;
+        if (!f3In.takeInputs(me)) break;
+        std::this_thread::sleep_for(milliseconds(400));
+        log(me, "produced P3 (total " + std::to_string(++p3Total) + ")");
+    }
+}
+
+struct FaultEvent {
+    int second;
+    Gate* gate;
+    bool down;
+    const char* text;
+};
